@@ -83,7 +83,7 @@ fun interface Flourish {
 class AllLiftAfterSettle(
     private val settleMs: Float = 90f,
     private val settleSpeedPxPerMs: Float = 0.6f,
-    private val liftWindowMs: Float = 120f,
+    private val liftWindowMs: Float = 180f,   // full-count → all-gone budget; covers a real trickle-lift
     private val minFingersForLift: Int = GestureSpec.DEFAULT_MIN_FINGERS,
 ) : Flourish {
 
@@ -94,23 +94,31 @@ class AllLiftAfterSettle(
         val last = frames.last()
         if (last.pressedCount != 0) return false
 
-        // Find the last frame that still had fingers down — the moment of lift-off.
-        val lastPressedIdx = frames.indexOfLast { it.pressedCount > 0 }
-        if (lastPressedIdx < 0) return false                 // never touched
-        val lastPressed = frames[lastPressedIdx]
+        // Anchor on the last frame the hand was at FULL count — the instant the lift began — NOT on the
+        // last frame with *any* finger down.
+        //
+        // WHY (the on-device placement bug): a real hand lifting 4–5 fingers does not clear the glass
+        // inside one ~16ms frame. The pressed count TRICKLES (5→3→1→0) across a few frames as the
+        // fingers peel off. The old code anchored on `indexOfLast { pressedCount > 0 }` — the LAST
+        // partial frame (the "1 finger left" frame) — and then required THAT frame to be at full count,
+        // so every realistic lift was rejected as a "ragged fumble" and no brick ever placed. The
+        // together-lift is properly defined by how FAST the hand clears once it STARTS leaving (the
+        // window below), not by whether every finger happens to vanish within a single sampled frame.
+        val fullIdx = frames.indexOfLast { it.pressedCount >= minFingersForLift }
+        if (fullIdx < 0) return false                        // never reached the finger floor
 
-        // (3a) The lift must have been TOGETHER: from the last pressed frame to the all-gone frame,
-        // within liftWindowMs.
-        val liftDtMs = (last.timeNanos - lastPressed.timeNanos) / 1_000_000f
+        // (3) The lift must have been TOGETHER: from the last full-count frame to the all-gone end of
+        // the window, within liftWindowMs. A normal human trickle-lift clears well inside the window; a
+        // stale buffer whose empty tail stretches long past the lift (the trailing-empties attack) does
+        // not, so a single gesture still commits at most once, only in the window the lift happened.
+        val liftDtMs = (last.timeNanos - frames[fullIdx].timeNanos) / 1_000_000f
         if (liftDtMs > liftWindowMs) return false
 
-        // (2/3b) Just before the lift the hand was at full strength.
-        if (lastPressed.pressedCount < minFingersForLift) return false
-
-        // (2) And it had SETTLED: walk back from the lift collecting the still tail; require its span
-        // to cover settleMs with centroid speed staying under threshold the whole way.
+        // (2) And it had SETTLED: walk back from the last full-count frame collecting the still tail;
+        // require its span to cover settleMs with centroid speed staying under threshold the whole way.
+        // A hand still moving right up to the lift (a fumble, not a finish) never accrues the still span.
         var settledSpan = 0f
-        var i = lastPressedIdx
+        var i = fullIdx
         while (i > 0) {
             val cur = frames[i]
             val prev = frames[i - 1]

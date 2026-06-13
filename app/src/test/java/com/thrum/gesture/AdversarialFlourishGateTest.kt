@@ -74,32 +74,53 @@ class AdversarialFlourishGateTest {
         assertNull(classifier.classify(frames, cell), "lift without a settle is not the uniform flourish")
     }
 
-    @Test fun a_ragged_lift_where_fingers_trickle_off_is_not_a_together_lift() {
-        // Hand settles still at full count, then fingers leave ONE AT A TIME across several frames. The
-        // last-pressed frame has < minFingersForLift fingers ⇒ not a together-lift ⇒ no commit.
+    @Test fun a_ragged_trickle_lift_within_the_window_IS_a_normal_human_lift_and_commits() {
+        // CORRECTED SPEC (on-device placement bug). A real hand lifting 4–5 fingers does NOT clear the
+        // glass within one 16ms frame — the pressed count trickles 5→3→1→0 across a few frames. The
+        // original gate anchored on the LAST partial frame and demanded it be at full count, so it
+        // rejected every realistic lift and NO brick ever placed on device. The together-lift is defined
+        // by how fast the hand clears once it starts leaving (within liftWindowMs of the last full-count
+        // frame), not by whether every finger vanishes inside a single sampled frame. A settled hand that
+        // then trickles off over ~48ms is a normal finish and MUST commit.
         val frames = mutableListOf<PointerFrame>()
         var t = 0L
         // settle still at 5 for ~160ms
         repeat(10) { frames += PointerFrame(SyntheticStream.ring(500f, 500f, 60f, 5), t); t += SyntheticStream.FRAME_NS }
-        // trickle: 5 → 3 → 1 → 0, one frame each
+        // trickle: 5 → 3 → 1 → 0, one frame each (~48ms total — well inside the lift window)
         frames += PointerFrame(pressedRing(500f, 500f, 60f, keep = 3), t); t += SyntheticStream.FRAME_NS
         frames += PointerFrame(pressedRing(500f, 500f, 60f, keep = 1), t); t += SyntheticStream.FRAME_NS
         frames += PointerFrame(SyntheticStream.lifted(5), t)
-        assertNull(classifier.classify(frames, cell), "fingers leaving raggedly is a fumble, not a together-lift flourish")
+        val r = classifier.classify(frames, cell)
+        assertNotNull(r, "a settled hand that trickles off within the lift window is a normal human lift")
+        assertEquals("tappy", r.card.id, "a centred, settled 5-finger gather mints tappy")
+    }
+
+    @Test fun a_too_slow_trickle_lift_exceeding_the_window_does_not_commit() {
+        // The boundary the corrected gate still enforces: if the hand peels off so SLOWLY that the span
+        // from the last full-count frame to the all-gone frame exceeds liftWindowMs, it is no longer a
+        // single together-lift — it is the hand wandering off, and must not commit.
+        val frames = mutableListOf<PointerFrame>()
+        var t = 0L
+        // settle still at 5 for ~160ms
+        repeat(10) { frames += PointerFrame(SyntheticStream.ring(500f, 500f, 60f, 5), t); t += SyntheticStream.FRAME_NS }
+        // very slow trickle: hold a partial count for ~13 frames (~208ms) before the hand finally clears.
+        repeat(13) { frames += PointerFrame(pressedRing(500f, 500f, 60f, keep = 2), t); t += SyntheticStream.FRAME_NS }
+        frames += PointerFrame(SyntheticStream.lifted(5), t)
+        assertNull(classifier.classify(frames, cell), "a lift dragged out past the window is not a together-lift")
     }
 
     @Test fun trailing_empty_frames_push_the_lift_outside_the_together_window() {
-        // ATTACK on indexOfLast + liftDtMs: a clean settle and together-lift, but the buffer then carries
-        // SEVERAL trailing all-empty frames (the player's hand is gone for a while). The lift-to-last-empty
-        // span now far exceeds liftWindowMs (120ms). If committed() measures the window end against the
-        // last-PRESSED frame correctly it must NOT re-fire on these stale empty tails — a single gesture
-        // must commit AT MOST in the window where the lift actually happened, not perpetually afterwards.
+        // ATTACK on the full-count anchor + liftDtMs: a clean settle and together-lift, but the buffer
+        // then carries SEVERAL trailing all-empty frames (the player's hand is gone for a while). The
+        // span from the last full-count frame to the final empty frame now far exceeds liftWindowMs
+        // (180ms). committed() must NOT re-fire on these stale empty tails — a single gesture must commit
+        // AT MOST in the window where the lift actually happened, not perpetually afterwards.
         val frames = mutableListOf<PointerFrame>()
         var t = 0L
         repeat(10) { frames += PointerFrame(SyntheticStream.ring(500f, 500f, 60f, 5), t); t += SyntheticStream.FRAME_NS }
         frames += PointerFrame(SyntheticStream.lifted(5), t); t += SyntheticStream.FRAME_NS // the together-lift frame
         repeat(15) { frames += PointerFrame(SyntheticStream.lifted(5), t); t += SyntheticStream.FRAME_NS } // 240ms of empties
-        // 15 empty frames * 16ms = 240ms from the last pressed frame to the final empty frame > 120ms window.
+        // From the last full-count frame to the final empty frame ≈ 256ms > the 180ms together window.
         assertNull(
             classifier.classify(frames, cell),
             "once the lift is stale (empties span > liftWindowMs) the gesture must not still read as committed",

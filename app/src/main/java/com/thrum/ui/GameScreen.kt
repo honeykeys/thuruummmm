@@ -20,10 +20,11 @@ import androidx.compose.ui.unit.dp
 import com.thrum.game.CollapseView
 import com.thrum.game.GameLoop
 import com.thrum.game.GameState
-import com.thrum.game.SlotDir
 import com.thrum.gesture.Finger
 import com.thrum.haptics.ThuruummmHaptics
+import com.thuruummm.physics.Cell
 import kotlinx.coroutines.isActive
+import kotlin.math.floor
 
 /**
  * The Game screen — LANDSCAPE orientation, full-screen Canvas, physics-driven build field.
@@ -93,7 +94,9 @@ fun GameScreen(onSetty: () -> Unit) {
     // the orientation is locked (no Activity recreation across Start→Game), no data layer,
     // no business logic to survive config change. Plain @Stable holder per ARCHITECTURE.md §3.
     val haptics = remember { ThuruummmHaptics(context.applicationContext) }
-    val state   = remember { GameState(haptics = haptics) }
+    // Inject the android logger HERE (the android edge); GameState itself stays JVM-pure. Placement +
+    // lift-edge telemetry surfaces on `adb logcat -s THRUM` — the on-thumb tuning aid for the gesture.
+    val state   = remember { GameState(haptics = haptics, log = { android.util.Log.d("THRUM", it) }) }
 
     // ── Shake animation state ─────────────────────────────────────────────────────────────────
     //
@@ -200,9 +203,12 @@ fun GameScreen(onSetty: () -> Unit) {
                     // window before the first pan fires. Only pan after the centroid has been stable
                     // (no finger-count change) for NAVVY_HOLD_FRAMES consecutive frames.
 
-                    // P1 fix: map pointer id → down position for reliable single-finger tap detection.
+                    // P1 fix: map pointer id → down position for reliable single-finger press detection.
                     val downPositions = mutableMapOf<Long, Offset>()    // key = PointerId.value
                     val downTimes     = mutableMapOf<Long, Long>()      // key = PointerId.value, value = System.nanoTime() at down
+                    // selecty is a LONG PRESS: each held finger fires its slot-move at most once. Track
+                    // which down-fingers already fired so a sustained hold does not repeat-fire every event.
+                    val selectyFiredIds = mutableSetOf<Long>()
 
                     var lastPanCentroid: Offset?  = null
                     // navvy hold gate: count consecutive multi-finger-move frames before panning starts.
@@ -242,45 +248,77 @@ fun GameScreen(onSetty: () -> Unit) {
                         state.onFingers(fingers)
 
                         when {
-                            // Single-finger lift → evaluate as selecty if brief + no drift (P1 fix).
-                            // We no longer use a separate lastSingleFingerPos/singleFingerDownNanos pair.
-                            // Instead we look up the down data by pointer id, which survives any
-                            // intermediate pressed.size transitions.
+                            // Single finger HELD still → selecty LONG PRESS (Karl: more intuitive than a tap,
+                            // and a stray tap no longer moves the slot). Fires ONCE per press (tracked by id)
+                            // the instant the hold crosses SELECTY_MIN_HOLD_MS with little drift, WHILE the
+                            // finger is still down — so it reads as a deliberate press-and-hold. A real held
+                            // finger keeps emitting micro-move events (sensor jitter) that re-enter this branch;
+                            // the lift branch below is the fallback for a perfectly dead-still finger that
+                            // emits nothing until it leaves. Direction is resolved from the press position
+                            // relative to the field centre (press left → slot moves left, etc.).
+                            pressed.size == 1 && released.isEmpty() -> {
+                                val f  = pressed.first()
+                                val id = f.id.value
+                                if (id !in selectyFiredIds) {
+                                    val down  = downPositions[id]
+                                    val downT = downTimes[id]
+                                    if (down != null && downT != null) {
+                                        val driftPx = (f.position - down).getDistance()
+                                        val holdMs  = (System.nanoTime() - downT) / 1_000_000L
+                                        if (driftPx < SELECTY_MAX_DRIFT_PX && holdMs >= SELECTY_MIN_HOLD_MS) {
+                                            val snap   = state.snapshot.value
+                                            val cellPx = with(density) { CELL_DP.dp.toPx() }
+                                            state.selectCell(
+                                                pressToCell(down, size.width.toFloat(), size.height.toFloat(), cellPx, snap.panCellX, snap.panCellY),
+                                            )
+                                            selectyFiredIds.add(id)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Single finger lifted → selecty FALLBACK fire for a dead-still finger that never
+                            // emitted a move (so the held branch never ran), plus per-finger cleanup. If the
+                            // press already fired while held, this only cleans up.
                             pressed.isEmpty() && released.size == 1 -> {
                                 val liftedChange = released.first()
                                 val id    = liftedChange.id.value
                                 val down  = downPositions.remove(id)
                                 val downT = downTimes.remove(id) ?: 0L
                                 val up    = liftedChange.position
-                                if (down != null) {
+                                val alreadyFired = selectyFiredIds.remove(id)
+                                if (!alreadyFired && down != null) {
                                     val driftPx = (up - down).getDistance()
                                     val holdMs  = (System.nanoTime() - downT) / 1_000_000L
-                                    if (driftPx < SELECTY_MAX_DRIFT_PX && holdMs < SELECTY_MAX_HOLD_MS) {
-                                        // It is a selecty tap — resolve direction relative to the
-                                        // field centre and advance the working slot.
-                                        val dir = resolveSelectyDir(up, size.width.toFloat(), size.height.toFloat())
-                                        state.selectAdjacent(dir)
+                                    if (driftPx < SELECTY_MAX_DRIFT_PX && holdMs >= SELECTY_MIN_HOLD_MS) {
+                                        val snap   = state.snapshot.value
+                                        val cellPx = with(density) { CELL_DP.dp.toPx() }
+                                        state.selectCell(
+                                            pressToCell(down, size.width.toFloat(), size.height.toFloat(), cellPx, snap.panCellX, snap.panCellY),
+                                        )
                                     }
                                 }
                             }
 
-                            // Multi-finger move → navvy candidate (P0b fix).
+                            // 2–3-finger move → navvy candidate (the swipey/navvy disambiguation fix).
                             //
-                            // The old code panned on the FIRST Move event with >= 2 fingers, which fires
-                            // during every minting gesture (4-5 fingers, all of which Move). This made
-                            // placement and camera-pan fight on every brick.
+                            // navvy (pan the view) and swipey (mint a brick) are BOTH whole-hand slides —
+                            // the only real-time signal that separates them is FINGER COUNT. Minting
+                            // gestures require the 4-finger floor (every card's GestureSpec.minFingers = 4),
+                            // so we reserve 4–5 fingers exclusively for minting and let a SMALLER 2–3-finger
+                            // drag pan the view. A 4–5-finger swipe therefore never enters this branch and
+                            // can no longer pan the camera while it places a brick (the bug Karl hit: the
+                            // whole field slid on every swipe because panBy accumulates and is never reset).
                             //
-                            // Fix: require NAVVY_HOLD_FRAMES consecutive multi-finger-move frames with
-                            // a STABLE finger count before the first pan fires. A minting gesture changes
-                            // finger count (down/up events intermix with moves) and commits in a short
-                            // burst, so it almost never reaches the hold threshold. A deliberate whole-
-                            // hand slide with no flourish is stable and reaches it.
+                            // The earlier NAVVY_HOLD_FRAMES hold-gate alone was insufficient — a committed
+                            // swipey holds a STABLE 5-finger count through its slide, so it reached the gate
+                            // and panned. The finger-count ceiling is the clean separator; the hold-gate is
+                            // kept on top to debounce jitter on a genuine 2–3-finger pan.
                             //
-                            // The NAVVY_HOLD_FRAMES threshold is a first guess tuned for feel on device.
-                            // The correct production fix (route navvy as an intent through GameState after
-                            // the gesture is ruled out by the classifier) requires a classifier API change;
-                            // this hold-gate is a pragmatic UI-layer guard for hackathon scope.
-                            pressed.size >= 2 && released.isEmpty() &&
+                            // The fully-correct production design (route navvy through GameState only after
+                            // the classifier rules out a mint on the flourish) needs a classifier API change;
+                            // the count split is the right pragmatic disambiguation for now.
+                            pressed.size in 2..NAVVY_MAX_FINGERS && released.isEmpty() &&
                                     event.type == PointerEventType.Move -> {
 
                                 // Reset the hold gate if the finger count changed.
@@ -324,6 +362,7 @@ fun GameScreen(onSetty: () -> Unit) {
                                 lastPanCentroid      = null
                                 navvyHoldFrames      = 0
                                 lastNavvyPressedCount = 0
+                                selectyFiredIds.clear()  // defensive: no held single finger remains
                                 // Do NOT clear downPositions/downTimes here — we already removed entries
                                 // in the released loop above. Any stale entries from a held-but-not-lifted
                                 // finger are cleaned by the per-pointer remove on lift.
@@ -344,14 +383,23 @@ fun GameScreen(onSetty: () -> Unit) {
 
 // ── Constants ──────────────────────────────────────────────────────────────────────────────────
 
-/** Tap must move less than this many pixels to count as a selecty (not a swipe). */
-private const val SELECTY_MAX_DRIFT_PX  = 24f
+/** A selecty press must stay within this many pixels of its down point to count as a still hold (not a
+ *  drag). A touch more tolerant than a tap since a long press accrues more settle. */
+private const val SELECTY_MAX_DRIFT_PX  = 36f
 
-/** Tap must lift within this many milliseconds to count as a selecty (not a hold). */
-private const val SELECTY_MAX_HOLD_MS   = 250L
+/** A single finger must be held at least this long to fire selecty — a deliberate LONG PRESS, not a tap.
+ *  (~Android long-press feel; short enough to stay snappy for a fidget toy.) Tuned on the thumb. */
+private const val SELECTY_MIN_HOLD_MS   = 350L
 
 /** Navvy centroid move must exceed this many pixels to avoid noise jitter. */
 private const val NAVVY_NOISE_PX        = 4f
+
+/**
+ * Max fingers for a navvy (view-pan) drag. Must stay STRICTLY BELOW the minting finger floor
+ * (every card's [com.thrum.deck.GestureSpec.minFingers] = 4) so a 4–5-finger swipey can never be
+ * read as a pan. 2–3 fingers pan the view; 4–5 fingers mint a brick.
+ */
+private const val NAVVY_MAX_FINGERS     = 3
 
 /**
  * Consecutive multi-finger-move frames required before navvy panning starts (P0b fix).
@@ -362,26 +410,31 @@ private const val NAVVY_NOISE_PX        = 4f
  */
 private const val NAVVY_HOLD_FRAMES     = 5
 
-// ── Selecty direction resolution ──────────────────────────────────────────────────────────────
+// ── Selecty press → grid cell mapping ──────────────────────────────────────────────────────────
 
 /**
- * Resolve a tap screen position to the [SlotDir] for [GameState.selectAdjacent].
+ * Invert a screen press position to the grid [Cell] under it — the EXACT inverse of
+ * [FieldCanvas]'s `cellToScreen`, so a long press picks the cell the player is actually pointing at:
  *
- * Strategy: the 4-directional quadrant based on position relative to screen centre.
- * Left half = LEFT, right half = RIGHT, top half = UP, bottom half = DOWN.
- * Diagonal quadrants favour the dominant axis (whichever is farther from centre).
+ *   cellToScreen(cell).x = (screenW/2 - panCellX*cellPx) + cell.x*cellPx      (cell LEFT edge)
+ *   cellToScreen(cell).y = screenH - (cell.y + 1 - panCellY)*cellPx           (cell TOP edge, y-flip)
  *
- * First guess — tuned on device once the game runs. A more sophisticated approach could use the
- * tap position relative to the nearest adjacent slot, but the quadrant heuristic is sufficient
- * for a hackathon scope.
+ * Solving for the cell that CONTAINS ([press]):
+ *   cell.x = floor((press.x - screenW/2)/cellPx + panCellX)
+ *   cell.y = floor((screenH - press.y)/cellPx + panCellY)
+ *
+ * [GameState.selectCell] then accepts it only if it is a legal build slot. The pan is read from the
+ * same snapshot the Canvas draws, so press→cell and cell→screen always agree (no scale divergence).
  */
-private fun resolveSelectyDir(tapPos: Offset, screenW: Float, screenH: Float): SlotDir {
-    val dx = tapPos.x - screenW / 2f  // positive = right
-    val dy = tapPos.y - screenH / 2f  // positive = down (screen y-down)
-    return if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
-        if (dx >= 0f) SlotDir.RIGHT else SlotDir.LEFT
-    } else {
-        // Note: engine y-up vs screen y-down: tap BELOW centre → engine DOWN.
-        if (dy >= 0f) SlotDir.DOWN else SlotDir.UP
-    }
+private fun pressToCell(
+    press: Offset,
+    screenW: Float,
+    screenH: Float,
+    cellPx: Float,
+    panCellX: Float,
+    panCellY: Float,
+): Cell {
+    val cellX = floor((press.x - screenW / 2f) / cellPx + panCellX).toInt()
+    val cellY = floor((screenH - press.y) / cellPx + panCellY).toInt()
+    return Cell(cellX, cellY)
 }

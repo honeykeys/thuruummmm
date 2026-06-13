@@ -71,6 +71,9 @@ fun FieldCanvas(
     val cellPx  = with(density) { CELL_DP.dp.toPx() }
     val cornerPx = with(density) { CORNER_DP.dp.toPx() }
     val glyphStroke = with(density) { GLYPH_STROKE_DP.dp.toPx() }
+    val gridStroke   = with(density) { GRID_STROKE_DP.dp.toPx() }
+    val groundStroke = with(density) { GROUND_STROKE_DP.dp.toPx() }
+    val targetStroke = with(density) { TARGET_STROKE_DP.dp.toPx() }
 
     Canvas(modifier = Modifier.fillMaxSize()) {
         // Read the snapshot INSIDE the draw lambda — this is the recomposition discipline.
@@ -96,6 +99,33 @@ fun FieldCanvas(
                 y = h - (cell.y + 1 - snap.panCellY) * cellPx,
             )
 
+            // Grid lattice — a faint cell grid so the player can READ the building space (where bricks
+            // snap, how tall the tower is, where the next slot sits). Drawn UNDER the bricks and slot so
+            // it never competes with them. Aligned to the same cell→screen mapping (and pan) as bricks,
+            // so the lines always frame the cells exactly. The y=0 boundary (bedrock, the bottom edge of
+            // the ground row) is drawn brighter — it is the floor the whole structure stands on.
+            run {
+                // Vertical lines at each cell's left/right edge across the visible width.
+                val firstCol = kotlin.math.floor((0f - gridOriginX) / cellPx).toInt()
+                val lastCol  = kotlin.math.ceil((w - gridOriginX) / cellPx).toInt()
+                for (col in firstCol..lastCol) {
+                    val x = gridOriginX + col * cellPx
+                    drawLine(GRID_LINE, Offset(x, 0f), Offset(x, h), gridStroke)
+                }
+                // Horizontal lines at each row boundary k: screenY(k) = h - (k - panCellY) * cellPx.
+                // k == 0 is bedrock (the bottom edge of the ground row).
+                val firstRow = kotlin.math.floor(snap.panCellY).toInt()
+                val lastRow  = firstRow + kotlin.math.ceil(h / cellPx).toInt() + 1
+                for (k in firstRow..lastRow) {
+                    val y = h - (k - snap.panCellY) * cellPx
+                    if (k == 0) {
+                        drawLine(GROUND_LINE, Offset(0f, y), Offset(w, y), groundStroke)
+                    } else {
+                        drawLine(GRID_LINE, Offset(0f, y), Offset(w, y), gridStroke)
+                    }
+                }
+            }
+
             // Draw placed bricks.
             for (brick in snap.bricks) {
                 val topLeft = cellToScreen(brick.cell)
@@ -115,16 +145,35 @@ fun FieldCanvas(
                 )
             }
 
-            // Target-cell highlight — the working slot for the next placement.
+            // Working-slot highlight — WHERE THE NEXT BRICK LANDS. This is the player's anchor: without
+            // it, selecty (the slot-moving tap) is invisible and the build feels blind. Drawn as an
+            // inset "drop zone": a translucent fill + a bright rounded border + a centre cross, so it
+            // reads unmistakably as an empty slot waiting for a brick (vs the solid, glyph-stamped bricks).
             snap.targetCell?.let { target ->
                 val topLeft = cellToScreen(target)
+                val inset   = cellPx * TARGET_INSET_FRACTION
+                val slotTL  = Offset(topLeft.x + inset, topLeft.y + inset)
+                val slotSz  = Size(cellPx - inset * 2f, cellPx - inset * 2f)
+                // Translucent fill — the slot reads as a soft drop zone, not a solid brick.
                 drawRoundRect(
-                    color        = TARGET_COLOR,
-                    topLeft      = topLeft,
-                    size         = Size(cellPx, cellPx),
+                    color        = TARGET_FILL,
+                    topLeft      = slotTL,
+                    size         = slotSz,
                     cornerRadius = CornerRadius(cornerPx, cornerPx),
-                    style        = Stroke(width = glyphStroke),
                 )
+                // Bright border — the unmistakable "here" outline.
+                drawRoundRect(
+                    color        = TARGET_BORDER,
+                    topLeft      = slotTL,
+                    size         = slotSz,
+                    cornerRadius = CornerRadius(cornerPx, cornerPx),
+                    style        = Stroke(width = targetStroke),
+                )
+                // Centre cross — a quiet "place here" mark, distinct from any brick glyph.
+                val c    = Offset(topLeft.x + cellPx / 2f, topLeft.y + cellPx / 2f)
+                val armX = cellPx * 0.16f
+                drawLine(TARGET_BORDER, Offset(c.x - armX, c.y), Offset(c.x + armX, c.y), targetStroke, StrokeCap.Round)
+                drawLine(TARGET_BORDER, Offset(c.x, c.y - armX), Offset(c.x, c.y + armX), targetStroke, StrokeCap.Round)
             }
 
             // Stress tremor — the structure trembles as it approaches collapse.
@@ -155,11 +204,14 @@ fun FieldCanvas(
 // ── Constants ──────────────────────────────────────────────────────────────────────────────────
 
 /**
- * Side length of one grid cell in dp. Chosen to fit ~10 cells across a landscape phone screen.
+ * Side length of one grid cell in dp. Sized to FINGER SCALE: a brick must read as at least as big as
+ * the fingertip that places it, or the player cannot intuit where it lands (Karl, on device — bricks at
+ * 52dp ≈ 14mm felt much smaller than a finger). 96dp ≈ 15–16mm on a Pixel 7, comfortably finger-sized,
+ * and still fits ~9–10 cells across a landscape phone. A pure feel parameter — tune on the thumb.
  * `internal` so [GameScreen] can reference this same constant for its navvy px→cell conversion,
  * eliminating the [GameScreen.CELL_DP_APPROX] duplicate that was a latent divergence bug (P2d).
  */
-internal const val CELL_DP = 52
+internal const val CELL_DP = 96
 
 /** Corner radius for brick roundrects. */
 private const val CORNER_DP = 8
@@ -173,7 +225,22 @@ private const val GLYPH_RADIUS_FRACTION = 0.32f
 /** Stress margin below which the tremor effect activates. 1.0 = calm, 0.0 = at limit. */
 private const val STRESS_TREMBLE_THRESHOLD = 0.25
 
-private val TARGET_COLOR = Color(0xFF7EC8E3).copy(alpha = 0.50f)
+// ── Grid + working-slot visuals ─────────────────────────────────────────────────────────────────
+
+/** Faint cell-lattice line — visible enough to read the build, quiet enough not to fight the bricks. */
+private val GRID_LINE   = Color.White.copy(alpha = 0.07f)
+/** Bedrock line (y=0 boundary) — the floor the structure stands on; brighter than the lattice. */
+private val GROUND_LINE = Color(0xFF7EC8E3).copy(alpha = 0.28f)
+private const val GRID_STROKE_DP   = 1
+private const val GROUND_STROKE_DP = 2
+
+/** Working-slot fill — a soft teal drop-zone tint inside the next-placement cell. */
+private val TARGET_FILL   = Color(0xFF7EC8E3).copy(alpha = 0.16f)
+/** Working-slot border + centre cross — the bright, unmistakable "next brick lands here" outline. */
+private val TARGET_BORDER = Color(0xFF7EC8E3).copy(alpha = 0.95f)
+private const val TARGET_STROKE_DP    = 3
+/** Inset of the slot drop-zone inside its cell, as a fraction of the cell — keeps it off the grid lines. */
+private const val TARGET_INSET_FRACTION = 0.06f
 
 // ── Material → colour ──────────────────────────────────────────────────────────────────────────
 

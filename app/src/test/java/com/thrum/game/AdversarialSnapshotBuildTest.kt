@@ -14,7 +14,9 @@ import com.thrum.haptics.HapticSink
 import com.thrum.haptics.Primitive
 import com.thrum.haptics.ThuruummmHaptics
 import com.thrum.haptics.haptic
+import com.thuruummm.physics.Brick
 import com.thuruummm.physics.Cell
+import com.thuruummm.physics.Grid
 import com.thuruummm.physics.Material
 import com.thuruummm.physics.PhysicsEngine
 import com.thuruummm.physics.Stress
@@ -30,12 +32,13 @@ import kotlin.test.assertTrue
  *
  * These attack the joins the happy path glosses over:
  *
- *   - GLYPH RECOVERY by Material is a MAP INVERSION with a documented "first card wins" tie-break when
- *     two cards share a Material. The existing tests never build that collision; this does, and pins
- *     the tie-break so a regression to last-wins (associateBy semantics) goes red.
+ *   - GLYPH is now a PER-BRICK LABEL recorded at commit (keyed by brick id from the minting card), so a
+ *     brick renders its own card's glyph even when several cards share one Material (the 7 swipey stubs).
+ *     The Material→Glyph inversion survives only as a FALLBACK for bricks never minted through commit;
+ *     these tests pin both the primary label and that the fallback never crashes / never emits null.
  *   - the classifier and cardsById are INDEPENDENTLY injectable, so a placed brick's material may be
- *     ABSENT from the glyph map. The KDoc promises a real fallback glyph ("never silent corruption"),
- *     not a crash — pinned here.
+ *     ABSENT from the glyph map — the per-brick label still renders the true minting glyph; an
+ *     uncommitted brick whose material is also unmapped falls back to a concrete glyph, never a crash.
  *   - onFingers is latest-wins within a frame; the loop drains one PointerFrame per tick.
  *   - stress is published every tick; an empty field reads calm (1.0) and agrees with Stress.margin.
  *   - hapticsAvailable is probed from the motor and forwarded to every snapshot.
@@ -76,14 +79,15 @@ class AdversarialSnapshotBuildTest {
             tick(frame.timeNanos) ?: fired
         }
 
-    // ── 1. glyph recovery: when two cards share a Material, the FIRST card's glyph wins ────────────
+    // ── 1. a committed brick renders ITS OWN minting card's glyph, even when a Material is shared ──
 
     @Test
-    fun `glyph recovery resolves a shared-material collision to the first card deterministically`() {
-        // Two cards, SAME Material, DIFFERENT glyphs. The classifier recognises whichever it is given;
-        // we give it only `first`, so `first` is placed. The glyph map is built over BOTH (cardsById),
-        // and must resolve the shared material to the FIRST card's glyph (putIfAbsent over an ordered
-        // map), never the second's. A regression to associateBy/last-wins flips this to SPIRAL.
+    fun `two cards sharing a Material still render each their own minting glyph`() {
+        // Two cards, SAME Material, DIFFERENT glyphs — exactly the 7-swipey situation (shared placeholder
+        // material, distinct arrows). The glyph is now recorded against the brick id AT COMMIT from the
+        // card the classifier actually fired, so the render shows the MINTING card's glyph directly — it
+        // never inverts Material→Glyph for a committed brick, so a shared material can no longer collapse
+        // two cards to one arrow. We fire `first`, so the brick must read `first`'s glyph.
         val first = gatherCard("first", Glyph.ARROW_CENTER)
         val second = gatherCard("second", Glyph.SPIRAL)   // same material, different glyph
 
@@ -91,24 +95,25 @@ class AdversarialSnapshotBuildTest {
             engine = PhysicsEngine(),
             classifier = GestureClassifier(cards = listOf(first)),     // only `first` can be recognised
             haptics = ThuruummmHaptics(FakeMotor()) { 0L },
-            cardsById = linkedMapOf(first.id to first, second.id to second), // ordered: first precedes second
+            cardsById = linkedMapOf(first.id to first, second.id to second),
         )
 
         assertNotNull(state.playStream(gatherStream()), "the gather commits the first card")
         assertEquals(
             Glyph.ARROW_CENTER,
             state.snapshot.value.bricks.single().glyph,
-            "a shared Material must resolve to the FIRST card's glyph, not the last (documented tie-break)",
+            "a committed brick renders its minting card's glyph (the per-brick label), not a material collision",
         )
     }
 
-    // ── 2. a placed material absent from cardsById falls back to a real glyph, never a crash ───────
+    // ── 2. the minting glyph wins even when the placed Material is ABSENT from the glyph map ───────
 
     @Test
-    fun `a placed material missing from the glyph map falls back to a real glyph`() {
-        // The classifier recognises `placed`, but cardsById does NOT contain it (independent injection).
-        // glyphFor cannot find the material → it must fall back to a concrete glyph (ARROW_CENTER per
-        // the KDoc), not throw and not emit null.
+    fun `a committed brick renders its minting glyph even when its material is unmapped`() {
+        // The classifier fires `placed` (glyph SPIRAL), but cardsById does NOT contain it (independent
+        // injection). The OLD design inverted Material→Glyph and would have fallen back to ARROW_CENTER;
+        // the per-brick label records SPIRAL at commit, so the render shows the TRUE minting glyph. This
+        // is the swipey fix in miniature — the card that minted the brick decides the arrow, full stop.
         val placed = gatherCard("placed-only", Glyph.SPIRAL)
         val other = gatherCard("other", Glyph.ARROW_RIGHT, material = tappyMaterial.copy(strength = 9.0))
 
@@ -119,10 +124,36 @@ class AdversarialSnapshotBuildTest {
             cardsById = mapOf(other.id to other),   // does NOT contain `placed`'s material
         )
 
-        assertNotNull(state.playStream(gatherStream()), "the gather commits even when its glyph is unmapped")
+        assertNotNull(state.playStream(gatherStream()), "the gather commits even when its material is unmapped")
         val brick = state.snapshot.value.bricks.single()
-        assertEquals(Glyph.ARROW_CENTER, brick.glyph, "an unmapped material must fall back to ARROW_CENTER, never crash")
+        assertEquals(Glyph.SPIRAL, brick.glyph, "the minting card's glyph is recorded per-brick and wins over the material map")
         assertEquals(tappyMaterial, brick.material, "the BrickView still carries the true physics Material")
+    }
+
+    // ── 2b. the Material→Glyph FALLBACK still applies to a brick never minted through commit ───────
+
+    @Test
+    fun `a brick present in the grid but never committed falls back to a real glyph, never crashes`() {
+        // The per-brick label is only populated at commit. A brick that exists in the engine grid by some
+        // OTHER path (here: a pre-seeded initial grid) has no recorded glyph, so buildSnapshot must fall
+        // back to the Material→Glyph map and, on a miss, to a concrete glyph (ARROW_CENTER) — never null,
+        // never a crash. This pins that the fallback the KDoc promises is still live.
+        val preExisting = Brick(id = 77, material = tappyMaterial, cell = Cell(0, 0))
+        val other = gatherCard("other", Glyph.ARROW_RIGHT, material = tappyMaterial.copy(strength = 9.0))
+
+        val state = GameState(
+            engine = PhysicsEngine(initialGrid = Grid(bricks = mapOf(Cell(0, 0) to preExisting))),
+            classifier = GestureClassifier(cards = listOf(other)),
+            haptics = ThuruummmHaptics(FakeMotor()) { 0L },
+            cardsById = mapOf(other.id to other),   // map non-empty but lacks the pre-existing brick's material
+        )
+
+        // An idle tick publishes a snapshot over the pre-seeded grid without committing anything.
+        state.onFingers(emptyList())
+        state.tick(0L)
+        val brick = state.snapshot.value.bricks.single()
+        assertEquals(Glyph.ARROW_CENTER, brick.glyph, "an uncommitted, unmapped brick falls back to ARROW_CENTER")
+        assertEquals(tappyMaterial, brick.material, "the fallback BrickView still carries the true physics Material")
     }
 
     // ── 3. onFingers is latest-wins within a frame: the loop drains the freshest deposit ──────────

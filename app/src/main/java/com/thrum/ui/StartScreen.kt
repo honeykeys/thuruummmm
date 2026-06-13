@@ -1,8 +1,16 @@
 package com.thrum.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -12,7 +20,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -20,7 +30,10 @@ import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.thrum.gesture.Finger
 
 /**
@@ -39,9 +52,9 @@ import com.thrum.gesture.Finger
  *  - Draws three finger-blob circles on a Canvas to teach the 3-5 finger posture.
  *  - Detects a rotate commit locally (spread fingers, then rotate, then lift = twist → start).
  *
- * The visual is deliberately sparse: three glowing circles, no text, no labels. The player learns
- * to place hands by feel + the visual hint. A "twist" arc indicator appears when enough fingers
- * are down to hint the next step.
+ * The visual is sparse: the "thuruummmm" wordmark up top, three glowing circles + a "twist" arc in
+ * the middle that cue the rotate posture, and a gently pulsing "twist to start" prompt at the bottom.
+ * The player learns to place hands by feel + the visual hint; the prompt names the one thing to do.
  *
  * ── Gesture detection strategy ────────────────────────────────────────────────────────────────
  *
@@ -110,7 +123,59 @@ fun StartScreen(onTwist: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         StartCanvas(fingers = fingers)
+
+        // Wordmark — the brand, calm pale-teal, wide-tracked. The repeated u's and m's stretch the
+        // word like the buzz it is named for. Light weight so it reads as a hush, not a shout.
+        Text(
+            text          = "thuruummmm",
+            color         = Color(0xFF7EC8E3),
+            fontSize      = 46.sp,
+            fontWeight    = FontWeight.Light,
+            letterSpacing = 3.sp,
+            textAlign     = TextAlign.Center,
+            modifier      = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 96.dp),
+        )
+
+        // The one instruction. Pulsing alpha draws the eye to act, in the screen's own language.
+        TwistPrompt(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 120.dp),
+        )
     }
+}
+
+/**
+ * The "twist to start" prompt — a gently breathing label. Isolated in its own composable so the
+ * per-frame alpha animation recomposes ONLY this Text, never the pointer loop or the finger Canvas.
+ *
+ * `rememberInfiniteTransition` + `animateFloat` drive a slow alpha breathe (FastOutSlowInEasing,
+ * Reverse) so the prompt feels alive without flashing. Verified current 2026-06-13:
+ * developer.android.com/develop/ui/animation/value-based (InfiniteTransition / animateFloat).
+ */
+@Composable
+private fun TwistPrompt(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "twist-prompt")
+    val alpha by transition.animateFloat(
+        initialValue  = 0.35f,
+        targetValue   = 0.85f,
+        animationSpec = infiniteRepeatable(
+            animation  = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "twist-prompt-alpha",
+    )
+    Text(
+        text          = "twist to start",
+        color         = Color.White.copy(alpha = alpha),
+        fontSize      = 18.sp,
+        fontWeight    = FontWeight.Normal,
+        letterSpacing = 5.sp,
+        textAlign     = TextAlign.Center,
+        modifier      = modifier,
+    )
 }
 
 /**
@@ -144,6 +209,10 @@ private fun StartCanvas(fingers: List<Finger>) {
         val cy = size.height / 2f
 
         if (showLive) {
+            // Bind the live finger points into ONE cohesive shape (drawn under the blobs) so the cluster
+            // reads as a single thing being TWISTED, not loose dots scattering apart as the hand turns.
+            drawCohesion(pressedFingers.map { Offset(it.x, it.y) }, strokePx)
+
             // Live finger blobs — track actual touch positions.
             for (f in pressedFingers) {
                 // Outer glow ring
@@ -181,6 +250,9 @@ private fun StartCanvas(fingers: List<Finger>) {
                 Offset(cx - arcRadius * 0.8f, cy + arcRadius * 0.5f),  // bottom-left
                 Offset(cx + arcRadius * 0.8f, cy + arcRadius * 0.5f),  // bottom-right
             )
+            // Connect the resting hint points too, so "they belong together" reads from the first glance
+            // — the same cohesive shape the live twist will rotate.
+            drawCohesion(positions, strokePx)
             for (pos in positions) {
                 drawCircle(
                     color  = Color(0xFF7EC8E3).copy(alpha = 0.15f),
@@ -209,6 +281,27 @@ private fun StartCanvas(fingers: List<Finger>) {
             }
         }
     }
+}
+
+/**
+ * Draw the [points] as ONE cohesive shape — a closed polygon through them, ordered by angle around
+ * their centroid so the outline never self-intersects, faintly filled and outlined. This is what keeps
+ * the twist points reading as a single held cluster that ROTATES together, instead of scattering into
+ * loose dots as the hand turns. Order-independent of the finger list (a late-landing finger slots into
+ * the ring by its angle, not its id), so the shape stays clean as fingers come and go.
+ */
+private fun DrawScope.drawCohesion(points: List<Offset>, strokePx: Float) {
+    if (points.size < 2) return
+    val cx = points.map { it.x }.average().toFloat()
+    val cy = points.map { it.y }.average().toFloat()
+    val ordered = points.sortedBy { kotlin.math.atan2(it.y - cy, it.x - cx) }
+    val path = Path().apply {
+        moveTo(ordered.first().x, ordered.first().y)
+        for (i in 1 until ordered.size) lineTo(ordered[i].x, ordered[i].y)
+        close()
+    }
+    drawPath(path, color = Color(0xFF7EC8E3).copy(alpha = 0.12f))                                  // membrane
+    drawPath(path, color = Color(0xFF7EC8E3).copy(alpha = 0.40f), style = Stroke(width = strokePx, cap = StrokeCap.Round)) // edge
 }
 
 /**

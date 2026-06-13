@@ -3,8 +3,8 @@
 /local.properties
 /.idea/
 .DS_Store
-/build
-/app/build
+# Gradle build outputs for every module (root, :app, :physics, and any future module).
+**/build/
 /captures
 .externalNativeBuild
 .cxx

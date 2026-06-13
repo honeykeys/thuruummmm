@@ -93,6 +93,13 @@ class GameState(
     private val classifier: GestureClassifier = GestureClassifier(),
     private val haptics: ThuruummmHaptics,
     private val cardsById: Map<String, Thuruummm> = Deck.byId,
+    /**
+     * Play-side placement telemetry sink. Default no-op so game/ stays android-free and JVM-pure (the
+     * ARCHITECTURE seam: logic in game/, the android edge in ui/). Production wiring in [GameScreen]
+     * passes `{ android.util.Log.d("THRUM", it) }`; unit tests leave it as the no-op, so a commit/lift
+     * tick never reaches an unmocked `android.jar` method. Watch on device with `adb logcat -s THRUM`.
+     */
+    private val log: (String) -> Unit = {},
 ) {
 
     // ── The single observable: the frame's draw model ────────────────────────────────────────────
@@ -161,6 +168,17 @@ class GameState(
     @Volatile
     private var pendingFingers: List<Finger> = emptyList()
 
+    /**
+     * Per-brick glyph, keyed by the physics brick id. The render needs each placed brick's glyph, but
+     * the engine is deck-ignorant (a [com.thuruummm.physics.Brick] carries only [Material]) and several
+     * cards may share ONE Material — the 7 swipey stubs all do — so inverting Material→Glyph collapses
+     * them to a single arrow. We instead record the MINTING card's glyph against the brick id at [commit],
+     * where the card is known, and read it back in [buildSnapshot]. Ids are monotonic and preserved
+     * through a fall, so a brick keeps its glyph even after it tumbles; entries are pruned when a brick
+     * collapses away. Loop-owned (written in [commit]/[reset] from the tick; read in [buildSnapshot]).
+     */
+    private val glyphById: MutableMap<Int, com.thrum.deck.Glyph> = mutableMapOf()
+
     /** Whether this device can buzz — probed once from the haptics facade; forwarded to the snapshot. */
     private val hapticsAvailable: Boolean = haptics.capabilities.hasVibrator
 
@@ -218,8 +236,24 @@ class GameState(
             if (recognized != null) {
                 step = commit(recognized)
                 fired = recognized
+                log(
+                    "PLACED ${recognized.card.id} @(${recognized.targetCell.x},${recognized.targetCell.y}) " +
+                        "score=${recognized.score} collapse=${step.collapse != null}",
+                )
                 buffer.clear() // a committed gesture is consumed; the next gesture starts clean.
             }
+        }
+
+        // Lift-edge telemetry (on-thumb tuning aid). When the hand fully leaves the glass WITHOUT a
+        // commit, log the peak finger count the window reached. This single line separates the two
+        // failure modes that look identical from the couch: "the finger floor was never reached"
+        // (peak < 4 — Karl needs more fingers / better tracking) vs "a good lift the flourish gate
+        // still rejected" (peak >= 4 — the gate needs tuning). Cheap: fires only on the lift edge.
+        // The logger is INJECTED (default no-op) so game/ stays android-free and JVM-pure: ui/ wires the
+        // real android.util.Log at the edge, and unit tests never touch the unmocked android.jar.
+        if (pressed == 0 && lastPressedCount > 0 && fired == null) {
+            val peak = buffer.frames().maxOfOrNull { it.pressedCount } ?: 0
+            log("lift · no place · peakFingers=$peak (floor=4) frames=${buffer.size}")
         }
 
         // (3) housekeeping for the gate + the buffer's hygiene. Track the pressed run so a SUSTAINED
@@ -281,6 +315,14 @@ class GameState(
         haptics.rummmm(r.card.rummmm)                                    // 3 — beat two, card character
         step.collapse?.let { haptics.thruummm(it) }                      // 4 — the reward, priority-locked
 
+        // Label the brick that just landed with its minting card's glyph (keyed by the stable brick id —
+        // the join the deck-ignorant engine cannot give us, and the fix for the 7 swipeys collapsing to
+        // one arrow). Only if it survived at the target cell; a placement that immediately collapsed away
+        // leaves nothing to label and falls back harmlessly in buildSnapshot.
+        step.grid.at(r.targetCell)?.let { glyphById[it.id] = r.card.glyph }
+        // Prune labels for bricks the collapse consumed so the map cannot grow without bound.
+        step.collapse?.fell?.forEach { glyphById.remove(it.id) }
+
         // Keep a sane working slot for the next gesture: if the brick we just placed is still standing
         // (no collapse consumed it), advance the target to a slot adjacent to it so the build grows
         // outward (DESIGN §"Build model": build outward from existing bricks). If it collapsed away,
@@ -318,6 +360,27 @@ class GameState(
     }
 
     /**
+     * selecty — pick the working slot DIRECTLY by the cell the finger long-pressed (Karl: "select the
+     * grid slot next to any current block"). This is the ABSOLUTE counterpart to [selectAdjacent]'s
+     * relative nudge: ui/ inverts the press position to a grid cell and hands it here. The cell is
+     * accepted only if it is a legal build slot — a FREE cell on the ground (y==0) or adjacent to a
+     * placed brick. A press onto an occupied cell or into the void is a no-op (the slot is unchanged),
+     * never an illegal target. game/ owns the board rule; ui/ owns the screen→cell mapping.
+     *
+     * @param cell the grid cell the press maps to.
+     * @return the resulting target cell (so a test/ui can confirm whether the press took).
+     */
+    fun selectCell(cell: Cell): Cell {
+        val buildable = isBuildableSlot(cell)
+        log("selecty press @(${cell.x},${cell.y}) buildable=$buildable")
+        if (buildable) {
+            targetCell = cell
+            _snapshot.value = buildSnapshot(step = null)
+        }
+        return targetCell
+    }
+
+    /**
      * navvy — pan the view (DESIGN §"Utility gestures": "a whole-hand slide that does not flourish —
      * pans the view across a large build"). Translation-WITHOUT-commit is navigation; the same slide
      * WITH a flourish would have been a placement (and the classifier would have caught it as a
@@ -339,6 +402,7 @@ class GameState(
     fun reset() {
         engine.reset()
         buffer.clear()
+        glyphById.clear()
         pendingFingers = emptyList()
         targetCell = Cell(0, 0)
         panCellX = 0f
@@ -372,7 +436,9 @@ class GameState(
             BrickView(
                 id = b.id,
                 cell = b.cell,
-                glyph = glyphFor(b.material),
+                // Each brick's OWN minting glyph (recorded at commit by brick id); the Material→Glyph
+                // inversion is only a fallback for any brick not minted through commit (never null).
+                glyph = glyphById[b.id] ?: glyphFor(b.material),
                 material = b.material,
             )
         }

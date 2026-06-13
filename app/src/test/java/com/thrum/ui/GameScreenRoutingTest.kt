@@ -5,7 +5,6 @@ import com.thrum.deck.Glyph
 import com.thrum.deck.Movement
 import com.thrum.deck.Thuruummm
 import com.thrum.game.GameState
-import com.thrum.game.SlotDir
 import com.thrum.gesture.GestureClassifier
 import com.thrum.gesture.SyntheticStream
 import com.thrum.haptics.Capabilities
@@ -18,7 +17,6 @@ import com.thuruummm.physics.Cell
 import com.thuruummm.physics.Material
 import com.thuruummm.physics.PhysicsEngine
 import org.junit.Test
-import kotlin.math.abs
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -32,9 +30,9 @@ import kotlin.test.assertTrue
  * the rules GameScreen applies to decide which [GameState] method to call — without Compose.
  *
  * The routing rules (GameScreen.kt):
- *   selecty: single-finger lift, drift < SELECTY_MAX_DRIFT_PX (24f), hold < SELECTY_MAX_HOLD_MS (250ms).
- *   navvy:   multi-finger (>=2) move, no press/release event, centroid move > NAVVY_NOISE_PX (4f).
- *   minting: multi-finger input that the GestureClassifier accumulates and commits on a flourish.
+ *   selecty: single-finger LONG PRESS — held >= SELECTY_MIN_HOLD_MS (350ms), drift < SELECTY_MAX_DRIFT_PX (36f).
+ *   navvy:   2–3-finger move (below the 4-finger mint floor), no press/release, centroid move > NAVVY_NOISE_PX (4f).
+ *   minting: 4–5-finger input that the GestureClassifier accumulates and commits on a flourish.
  *
  * Because GameScreen is a @Composable we cannot drive its `pointerInput` block from the JVM test
  * environment (no Compose, no `PointerInputScope`). Instead, we test the DOWNSTREAM EFFECT of
@@ -57,8 +55,8 @@ class GameScreenRoutingTest {
 
     // ── Replicated constants from GameScreen.kt ────────────────────────────────────────────────
 
-    private val SELECTY_MAX_DRIFT_PX  = 24f
-    private val SELECTY_MAX_HOLD_MS   = 250L
+    private val SELECTY_MAX_DRIFT_PX  = 36f
+    private val SELECTY_MIN_HOLD_MS   = 350L   // selecty is now a LONG PRESS: hold >= this fires
     private val NAVVY_NOISE_PX        = 4f
     private val CELL_DP_APPROX        = 52f  // same as GameScreen.CELL_DP_APPROX
 
@@ -103,63 +101,75 @@ class GameScreenRoutingTest {
         cardsById  = mapOf(gatherCard.id to gatherCard),
     )
 
-    // ── A. selecty correctly routes a clean tap to the adjacent slot ─────────────────────────
+    // ── A. selecty (a single-finger LONG PRESS) selects the pressed slot DIRECTLY (absolute) ──────
 
     @Test
-    fun `a clean single-finger tap (within drift and hold limits) advances the working slot`() {
+    fun `a long press selects the pressed ground slot directly (absolute selecty)`() {
         val state = makeState()
-        val screenW = 1920f; val screenH = 1080f
-
-        // Tap to the right of centre: dx=400 > dy=0 → SlotDir.RIGHT. From Cell(0,0), RIGHT → Cell(1,0).
-        val dir = selectyDir(tapX = screenW / 2f + 400f, tapY = screenH / 2f, screenW, screenH)
-        assertEquals(SlotDir.RIGHT, dir, "a right-half tap must resolve to RIGHT")
-        val moved = state.selectAdjacent(dir)
-        assertEquals(Cell(1, 0), moved, "the slot must move one cell to the right")
-        assertEquals(Cell(1, 0), state.snapshot.value.targetCell, "the snapshot must reflect the new slot")
+        // On an empty field every ground cell (y==0) is a legal slot, so the press maps to a cell and
+        // selectCell adopts it verbatim — this is "select the grid slot next to any current block", and
+        // on an empty field it is how the FIRST brick's slot is chosen. ui/ does the press→cell inverse
+        // (covered by SelectyDirResolutionTest); here we pin that game/ adopts the chosen cell.
+        val moved = state.selectCell(Cell(2, 0))
+        assertEquals(Cell(2, 0), moved, "selecty adopts the pressed ground cell directly")
+        assertEquals(Cell(2, 0), state.snapshot.value.targetCell, "the snapshot reflects the directly-selected slot")
     }
 
-    // ── B. selecty is rejected when the drift exceeds the threshold ───────────────────────────
+    @Test
+    fun `a long press onto a non-buildable cell (floating, no adjacent brick) is a no-op`() {
+        val state = makeState()
+        // First select a legal ground slot so there is a published, non-default slot to defend.
+        state.selectCell(Cell(2, 0))
+        val before = state.snapshot.value.targetCell
+        assertEquals(Cell(2, 0), before, "precondition: the valid press selected the ground slot")
+        // A cell floating high over an otherwise-empty field is neither ground nor adjacent to a brick →
+        // not a legal slot. selectCell must reject it and leave the working slot exactly where it was.
+        val moved = state.selectCell(Cell(5, 9))
+        assertEquals(Cell(2, 0), moved, "a press into the void must not move the slot")
+        assertEquals(before, state.snapshot.value.targetCell, "the snapshot slot is unchanged")
+    }
+
+    // ── B. selecty is rejected when the press drifts too far (it is a drag, not a still hold) ──────
     //
-    // A tap with drift >= SELECTY_MAX_DRIFT_PX (24f) is treated as a navvy start, not a selecty.
-    // The check: `driftPx < SELECTY_MAX_DRIFT_PX && holdMs < SELECTY_MAX_HOLD_MS`. We model
-    // "drift too large → no selectAdjacent call" by asserting the slot does NOT move.
+    // The runtime check is `driftPx < SELECTY_MAX_DRIFT_PX (36f) && holdMs >= SELECTY_MIN_HOLD_MS`.
+    // We model "drift too large → no selectAdjacent call" by asserting the slot does NOT move.
 
     @Test
-    fun `a drifty tap (drift at or above threshold) is rejected as a selecty — slot must not move`() {
+    fun `a drifting press (drift at or above threshold) is rejected as a selecty — slot must not move`() {
         val state = makeState()
         val initialTarget = state.snapshot.value.targetCell
 
-        // Drift of exactly SELECTY_MAX_DRIFT_PX is on the boundary — not strictly less → rejected.
-        val driftPx = SELECTY_MAX_DRIFT_PX   // exactly at the boundary — NOT less than, so rejected
+        val driftPx = SELECTY_MAX_DRIFT_PX   // exactly at the boundary — NOT strictly less → rejected
         val passed = driftPx < SELECTY_MAX_DRIFT_PX   // the actual runtime check
         assertFalse(passed, "drift at exactly the threshold must fail the < check → selecty rejected")
 
-        // The slot has not moved (no selectAdjacent was called).
         assertEquals(initialTarget, state.snapshot.value.targetCell,
             "a rejected selecty must not change the working slot")
     }
 
     @Test
-    fun `a tap with drift strictly less than the threshold is accepted`() {
+    fun `a still press with drift strictly less than the threshold is accepted`() {
         val driftPx = SELECTY_MAX_DRIFT_PX - 0.001f
         assertTrue(driftPx < SELECTY_MAX_DRIFT_PX,
-            "drift of ${driftPx}px is strictly less than the threshold → accepted as a selecty")
+            "drift of ${driftPx}px is strictly less than the threshold → accepted as a still press")
     }
 
-    // ── C. selecty is rejected when the hold exceeds the threshold ────────────────────────────
+    // ── C. selecty fires only on a LONG hold: a short tap is rejected, a held press is accepted ────
 
     @Test
-    fun `a long-held tap (holdMs at or above threshold) is rejected as a selecty`() {
-        val holdMs = SELECTY_MAX_HOLD_MS   // exactly at the boundary — NOT less than, so rejected
-        val passed = holdMs < SELECTY_MAX_HOLD_MS   // the actual runtime check
-        assertFalse(passed, "hold at exactly the threshold must fail the < check → selecty rejected")
+    fun `a short tap (held under the long-press threshold) is rejected as a selecty`() {
+        // The new semantics: a quick tap must NOT move the slot (the whole point of switching to a long
+        // press). The runtime check is `holdMs >= SELECTY_MIN_HOLD_MS`; a 349ms tap fails it.
+        val holdMs = SELECTY_MIN_HOLD_MS - 1L
+        val passed = holdMs >= SELECTY_MIN_HOLD_MS
+        assertFalse(passed, "a hold under the long-press threshold must fail the >= check → selecty rejected")
     }
 
     @Test
-    fun `a hold strictly less than the threshold is accepted as a selecty`() {
-        val holdMs = SELECTY_MAX_HOLD_MS - 1L
-        assertTrue(holdMs < SELECTY_MAX_HOLD_MS,
-            "hold of ${holdMs}ms is strictly less than the threshold → accepted as a selecty")
+    fun `a press held at or past the long-press threshold is accepted as a selecty`() {
+        val holdMs = SELECTY_MIN_HOLD_MS
+        assertTrue(holdMs >= SELECTY_MIN_HOLD_MS,
+            "a hold of ${holdMs}ms is at/past the long-press threshold → accepted as a selecty")
     }
 
     // ── D. navvy below the noise floor is silently ignored ────────────────────────────────────
@@ -259,7 +269,7 @@ class GameScreenRoutingTest {
         val motor = FakeMotor()
         val state = makeState(motor)
 
-        state.selectAdjacent(SlotDir.RIGHT)  // the selecty route
+        state.selectCell(Cell(1, 0))  // the selecty route (absolute slot pick)
         assertEquals(0, motor.playCount, "selecty must never fire the haptic engine")
     }
 
@@ -288,15 +298,4 @@ class GameScreenRoutingTest {
             "a committed gesture must fire at least 2 haptic beats (thur + rummmm); got ${motor.playCount}")
     }
 
-    // ── Replica of GameScreen.resolveSelectyDir ────────────────────────────────────────────────
-
-    private fun selectyDir(tapX: Float, tapY: Float, screenW: Float, screenH: Float): SlotDir {
-        val dx = tapX - screenW / 2f
-        val dy = tapY - screenH / 2f
-        return if (abs(dx) >= abs(dy)) {
-            if (dx >= 0f) SlotDir.RIGHT else SlotDir.LEFT
-        } else {
-            if (dy >= 0f) SlotDir.DOWN else SlotDir.UP
-        }
-    }
 }
