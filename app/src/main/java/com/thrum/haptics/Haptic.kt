@@ -28,14 +28,36 @@ sealed interface Haptic {
         override val label: String,
         val timings: LongArray,
         val amplitudes: IntArray,
-    ) : Haptic
+    ) : Haptic {
+        init {
+            // Structural validity for android VibrationEffect.createWaveform: the two arrays must be the
+            // same length (each timing pairs with one amplitude) and every amplitude must lie in the
+            // motor's 0..255 range. Reject malformed waves at CONSTRUCTION so a bad card can never reach
+            // the motor and crash createWaveform at play time.
+            require(timings.size == amplitudes.size) {
+                "Wave timings and amplitudes must be the same length, got ${timings.size} timings and ${amplitudes.size} amplitudes"
+            }
+            require(amplitudes.all { it in 0..255 }) {
+                "Wave amplitudes must each be in 0..255, got ${amplitudes.toList()}"
+            }
+        }
+    }
 }
 
 /**
  * One primitive note: which primitive, how hard ([scale] 0..1 — the velocity), and the pause
  * before it in ms ([delayMs] — the timing / rest before this note sounds).
  */
-data class Note(val primitive: Primitive, val scale: Float = 1f, val delayMs: Int = 0)
+data class Note(val primitive: Primitive, val scale: Float = 1f, val delayMs: Int = 0) {
+    init {
+        // Structural validity. scale is a velocity in (0, 1]: 0 is a silent note that would degrade the
+        // haptic invisibly, and > 1 is an author error the engine would otherwise mask by coercing. delayMs
+        // is a rest before the note — negative is undefined in the Android Composition API. Reject at
+        // construction so a malformed note can never enter a card's score.
+        require(scale.isFinite() && scale > 0f && scale <= 1f) { "Note scale must be in (0, 1], got $scale" }
+        require(delayMs >= 0) { "Note delayMs must be >= 0, got $delayMs" }
+    }
+}
 
 /**
  * Our names over the Android primitive constants. Each carries the two device-level facts that

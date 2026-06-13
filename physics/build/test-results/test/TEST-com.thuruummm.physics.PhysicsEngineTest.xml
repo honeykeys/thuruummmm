@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.thuruummm.physics.PhysicsEngineTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-06-13T15:48:11.908Z" hostname="Karls-MacBook-Pro.local" time="0.002">
+  <properties/>
+  <testcase name="tangled collapse outscores a taller plain tower" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="cantilever one cell past reach falls" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="short stack stands" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="tall stack buckles at the bottom" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="grid is consistent after every placement" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.002"/>
+  <testcase name="floating brick falls and shatters" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="overloaded brick collapses with everything above it" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="cantilever within reach holds" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="short drop lands intact" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <testcase name="shattering brittle structure triggers multi-ring cascade" classname="com.thuruummm.physics.PhysicsEngineTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

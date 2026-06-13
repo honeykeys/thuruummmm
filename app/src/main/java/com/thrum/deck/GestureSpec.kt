@@ -9,11 +9,16 @@ package com.thrum.deck
  * not a fixed enum. No value constraints live here — only the structural contract. Two cards
  * may describe completely different hand shapes while sharing the same Movement subtype.
  *
- * Recognition model (GESTURES.md, three recognizer families):
+ * Recognition model — three recognizer families (described in DESIGN.md and ARCHITECTURE.md §2):
  *
- *   net centroid translation  → [Movement.Translate] (the "swipey" family; direction = any angle)
- *   rotation + contraction    → [Movement.RotateContract]  (the "twisty" family)
- *   pure contraction (gather) → [Movement.Gather]  (the "tappy" family)
+ *   net centroid translation  → [Movement.Translate]      (the "swipey" family; direction = any angle)
+ *   rotation + contraction    → [Movement.RotateContract] (the "twisty" family)
+ *   pure contraction (gather) → [Movement.Gather]         (the "tappy" family)
+ *
+ * Note: ARCHITECTURE.md §2 included a `startConfig: StartConfig` dial in the original sketch.
+ * That field was intentionally collapsed into the Movement subtype hierarchy: each Movement
+ * subtype carries its own recognition parameters (minDriftPx, minRotationRad, maxSpreadRatio)
+ * which subsume the start-config concept without a separate dial. The collapse is deliberate.
  *
  * The classifier extracts three geometric features from the pointer stream and pattern-matches
  * against each card's spec; [tolerance] controls the match slack. No other code changes when
@@ -29,13 +34,25 @@ package com.thrum.deck
  *                    First-guess values; tuned on the thumb, not computed.
  */
 data class GestureSpec(
-    val minFingers: Int = 4,
+    val minFingers: Int = DEFAULT_MIN_FINGERS,
     val movement: Movement,
     val tolerance: Float = 0.15f,
 ) {
     init {
         require(minFingers >= 1) { "minFingers must be >= 1, got $minFingers" }
         require(tolerance in 0f..1f) { "tolerance must be in 0..1, got $tolerance" }
+    }
+
+    companion object {
+        /**
+         * The canonical DESIGN finger floor: 4–5 fingers, a single finger / two pinkies do not register
+         * (DESIGN.md). THE single source of truth for the default floor — the data-class default above
+         * and the flourish's deck-less fallback ([com.thrum.gesture.Flourish.Default]) both read this,
+         * so the number lives in exactly one place. Per-card overrides are still allowed (a card may
+         * require 5); production flourish wiring derives its floor from the actual deck via
+         * `Flourish.forDeck`, not from this constant.
+         */
+        const val DEFAULT_MIN_FINGERS = 4
     }
 }
 
@@ -53,7 +70,7 @@ data class GestureSpec(
  *   spreadChange    — ratio of final spread to initial spread (< 1 = converging, > 1 = expanding)
  *   rotationRad     — net rotation of the finger cloud about its centroid
  *
- * The three families partition this space cleanly (GESTURES.md):
+ * The three families partition this space cleanly (DESIGN.md / ARCHITECTURE.md §2):
  *
  *   Gather          — large spreadChange < 1,  small centroidDrift,  small rotation
  *   RotateContract  — spreadChange < 1,         small centroidDrift,  large |rotationRad|
@@ -109,6 +126,11 @@ sealed interface Movement {
      * [recognizerId]. Adding a [Custom] card leaves the classifier's geometry branches untouched
      * but requires a matching recogniser to be registered in GestureClassifier's dispatch table.
      *
+     * EXCEPTION to the "adding a card = one object, nothing else changes" invariant: a [Custom]
+     * card is deliberately two edits — one in [Deck], one in GestureClassifier's dispatch table.
+     * That coupling is the cost of using the escape hatch. The invariant holds only for the three
+     * geometric families ([Gather], [RotateContract], [Translate]).
+     *
      * Use sparingly — the three families cover the whole deck right now. This is the extension
      * hatch, not the default.
      */
@@ -118,14 +140,22 @@ sealed interface Movement {
     ) : Movement
 }
 
-/** Compass directions in screen coordinates (y-down), in radians. Convenience for Deck authoring. */
+/**
+ * Compass directions in screen coordinates (y-down), in radians. Convenience for Deck authoring.
+ *
+ * Plain `val` (not `const`) — `Math.PI` is a runtime JVM field read and `.toFloat()` is a
+ * runtime call; neither is a compile-time constant expression in Kotlin, so `const val` would
+ * fail to compile. `val` computes each entry once at object initialisation, which is identical
+ * in practice for authoring constants. No `const` buys nothing here: `Dir` is referenced only
+ * inside `Deck.kt`, never in annotation arguments or other sites requiring true constants.
+ */
 object Dir {
-    const val RIGHT      = 0f
-    const val DOWN_RIGHT = (Math.PI / 4).toFloat()
-    const val DOWN       = (Math.PI / 2).toFloat()
-    const val DOWN_LEFT  = (3 * Math.PI / 4).toFloat()
-    const val LEFT       = Math.PI.toFloat()
-    const val UP_LEFT    = (5 * Math.PI / 4).toFloat()
-    const val UP         = (3 * Math.PI / 2).toFloat()
-    const val UP_RIGHT   = (7 * Math.PI / 4).toFloat()
+    val RIGHT      = 0f
+    val DOWN_RIGHT = (Math.PI / 4).toFloat()
+    val DOWN       = (Math.PI / 2).toFloat()
+    val DOWN_LEFT  = (3 * Math.PI / 4).toFloat()
+    val LEFT       = Math.PI.toFloat()
+    val UP_LEFT    = (5 * Math.PI / 4).toFloat()
+    val UP         = (3 * Math.PI / 2).toFloat()
+    val UP_RIGHT   = (7 * Math.PI / 4).toFloat()
 }

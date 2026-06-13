@@ -30,10 +30,13 @@ data class Material(
     val brittleness: Double,
 ) {
     init {
-        require(weight > 0) { "weight must be > 0, got $weight" }
-        require(strength > 0) { "strength must be > 0, got $strength" }
+        // Finite AND positive: POSITIVE_INFINITY passes `> 0` but would poison every downstream load /
+        // stress calculation, and NaN passes nothing but must be named explicitly. A material stat is a
+        // real, finite number or it is not a material.
+        require(weight.isFinite() && weight > 0) { "weight must be a finite value > 0, got $weight" }
+        require(strength.isFinite() && strength > 0) { "strength must be a finite value > 0, got $strength" }
         require(cantilever >= 0) { "cantilever must be >= 0, got $cantilever" }
         require(shatterThreshold >= 0) { "shatterThreshold must be >= 0, got $shatterThreshold" }
-        require(brittleness in 0.0..1.0) { "brittleness must be in 0..1, got $brittleness" }
+        require(brittleness.isFinite() && brittleness in 0.0..1.0) { "brittleness must be a finite value in 0..1, got $brittleness" }
     }
 }

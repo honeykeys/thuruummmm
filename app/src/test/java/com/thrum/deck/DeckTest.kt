@@ -4,7 +4,6 @@ import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.assertFalse
 
 /**
  * Adversarial property tests for the deck registry.
@@ -87,19 +86,36 @@ class DeckTest {
     }
 
     @Test
-    fun `swipey cards all have directionRad set`() {
-        val swipeys = Deck.CARDS.filter { it.gesture.movement is Movement.Translate }
-        for (card in swipeys) {
+    fun `current stub swipeys all have directionRad set`() {
+        // SCOPED TO CURRENT STUB SET. The type permits directionRad = null (any-direction swipe),
+        // and the architecture's "no value constraints" rule explicitly allows it for future cards.
+        // This test only asserts that the *existing* 7 stub swipeys are direction-locked, as the
+        // deck spec requires for the compass set. Do not generalise to "all Translate cards forever"
+        // — that would break the moment Karl authors an any-direction swipe card. (F5)
+        val knownDirectionalIds = setOf(
+            "swipey-right", "swipey-down-right", "swipey-down",
+            "swipey-down-left", "swipey-left", "swipey-up", "swipey-up-right",
+        )
+        for (id in knownDirectionalIds) {
+            val card = Deck.byId[id] ?: continue  // card may not exist yet during incremental authoring
             val dir = (card.gesture.movement as Movement.Translate).directionRad
-            assertNotNull(dir, "${card.id}: swipey card has no directionRad (direction-locked required)")
+            assertNotNull(dir, "$id: compass swipey has no directionRad")
         }
     }
 
     @Test
-    fun `swipey directions are all distinct`() {
+    fun `current stub swipey directions are all distinct`() {
+        // SCOPED TO CURRENT STUB SET. Two future cards could legitimately share null directionRad
+        // (both accept any direction) without being duplicates — using toSet() over Float? would
+        // count both nulls as one entry and misreport a collision. Guard: filter to direction-locked
+        // cards only, then assert uniqueness over the non-null set. (F5/F6)
         val swipeys = Deck.CARDS.filter { it.gesture.movement is Movement.Translate }
-        val dirs = swipeys.map { (it.gesture.movement as Movement.Translate).directionRad }
-        assertEquals(dirs.size, dirs.toSet().size, "duplicate swipey direction: $dirs")
+        val lockedDirs = swipeys
+            .mapNotNull { (it.gesture.movement as Movement.Translate).directionRad }
+        assertEquals(
+            lockedDirs.size, lockedDirs.toSet().size,
+            "duplicate direction-locked swipey direction: $lockedDirs",
+        )
     }
 
     @Test

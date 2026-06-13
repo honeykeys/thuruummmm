@@ -78,7 +78,8 @@ object Deck {
             ),
             rummmm = haptic("tappy-rummmm") {
                 // Light, crisp — confirms the brick landed, carries no ambition.
-                // Primitive.TICK (id=7) is API 30; minSdk=31 so always available.
+                // Primitive.TICK (id=7) is API 30; minSdk=31 so the API floor is cleared.
+                // Hardware support still gated at play time by HapticEngine.arePrimitivesSupported.
                 // Verified: developer.android.com/reference/android/os/VibrationEffect.Composition (2026-06-13)
                 tick(scale = 0.55f)
             },
@@ -113,7 +114,8 @@ object Deck {
             ),
             rummmm = haptic("twisty-rummmm") {
                 // A spin you can feel — the cantilever brick's character.
-                // Primitive.SPIN (id=3) is API 31; minSdk=31 so always available.
+                // Primitive.SPIN (id=3) is API 31; minSdk=31 so the API floor is cleared.
+                // Hardware support still gated at play time by HapticEngine.arePrimitivesSupported.
                 // Verified: developer.android.com/reference/android/os/VibrationEffect.Composition (2026-06-13)
                 spin(scale = 0.70f)
                 tick(scale = 0.35f, delay = 40) // a trailing crisp note, settling
@@ -125,6 +127,13 @@ object Deck {
         //
         // All 7 share the same recognizer family (Movement.Translate); they differ only by
         // [directionRad]. The classifier measures the swipe angle and finds the nearest card.
+        //
+        // maxDirectionErrorRad = 0.38f (NOT the 0.40 default): adjacent octants are π/4 ≈ 0.785 rad
+        // apart, so two neighbouring cards' acceptance cones (errA + errB) must total LESS than 0.785
+        // or a mid-octant swipe falls inside both and is ambiguous. At 0.40 the combined cone is 0.80 >
+        // 0.785 — overlapping. At 0.38 it is 0.76 < 0.785, so each octant owns a clean ±0.38 (~22°) with
+        // a sliver of dead band between, and no swipe can be claimed by two cards. Recognition slack,
+        // tuned on the thumb; keep all 7 consistent.
         //
         // STUB: gesture specs are locked per GESTURES.md. Material and haptic are PLACEHOLDERS.
         // Karl replaces these once the physics engine identifies interesting points in material space.
@@ -142,7 +151,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.RIGHT,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -161,7 +170,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.DOWN_RIGHT,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -180,7 +189,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.DOWN,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -199,7 +208,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.DOWN_LEFT,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -218,7 +227,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.LEFT,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -237,7 +246,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.UP,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -256,7 +265,7 @@ object Deck {
                 movement   = Movement.Translate(
                     minDriftPx        = 80f,
                     directionRad      = Dir.UP_RIGHT,
-                    maxDirectionErrorRad = 0.4f,
+                    maxDirectionErrorRad = 0.38f,
                 ),
                 tolerance  = 0.15f,
             ),
@@ -281,7 +290,8 @@ object Deck {
      *  Replace with a distinctive composed haptic when Karl assigns the final material. */
     private fun swipeyRummmm(label: String): Haptic = haptic(label) {
         // Primitive.QUICK_RISE (id=4) is API 30; Primitive.CLICK (id=1) is API 30.
-        // minSdk=31 so both are always available.
+        // minSdk=31 so the API floor is cleared for both.
+        // Hardware support still gated at play time by HapticEngine.arePrimitivesSupported.
         // Verified: developer.android.com/reference/android/os/VibrationEffect.Composition (2026-06-13)
         quickRise(scale = 0.55f)
         click(scale = 0.70f, delay = 30)

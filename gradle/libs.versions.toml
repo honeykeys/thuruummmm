@@ -1,7 +1,7 @@
 [versions]
 agp = "9.2.0"             # verified latest stable (developer.android.com/build/releases/gradle-plugin, 2026-06-13)
 kotlin = "2.4.0"          # verified latest stable (kotlinlang.org/docs/releases.html, 2026-06-13)
-composeBom = "2026.06.00" # verified latest BOM (developer.android.com/jetpack/compose/bom/bom-mapping, 2026-06-13)
+composeBom = "2026.05.01" # latest PUBLISHED BOM per Maven metadata (dl.google.com/.../compose-bom/maven-metadata.xml, 2026-06-13); research's 2026.06.00 does not exist
 activityCompose = "1.13.0" # verified latest stable (developer.android.com/jetpack/androidx/releases/activity, 2026-06-13)
 coreKtx = "1.19.0"         # verified latest stable (developer.android.com/jetpack/androidx/releases/core, 2026-06-13)
 coroutinesTest = "1.9.0"   # kotlinx.coroutines stable (github.com/Kotlin/kotlinx.coroutines/releases, 2026-06-13 — matches coroutines bundled with Kotlin 2.4)
@@ -24,8 +24,8 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" } # versioned with Kotlin (§1)
+# kotlin-android REMOVED — AGP 9.0+ has built-in Kotlin (developer.android.com/build/migrate-to-built-in-kotlin, 2026-06-13)
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" } # versioned with Kotlin
 # Pure-Kotlin JVM module plugin. Verified: kotlinlang.org/docs/gradle-configure-project.html, 2026-06-13.
 # In a version catalog the alias uses a dash: libs.plugins.kotlin.jvm resolves to id "org.jetbrains.kotlin.jvm".
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
