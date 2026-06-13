@@ -1,4 +1,4 @@
-# thuuruummmm
+# thuruummmm
 
 > **Build by feel, crash on purpose** — a haptics-first tower game where five-finger gestures mint the bricks and the collapse is the whole reward.
 
