@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Framework-only theme: no Material Components XML dependency. Compose supplies the real
+         theme via MaterialTheme in setContent. NoActionBar so the Compose surface owns the screen. -->
+    <style name="Theme.Thrum" parent="android:Theme.Material.NoActionBar" />
+</resources>

@@ -1,0 +1,31 @@
+[versions]
+agp = "9.2.0"             # verified latest stable (developer.android.com/build/releases/gradle-plugin, 2026-06-13)
+kotlin = "2.4.0"          # verified latest stable (kotlinlang.org/docs/releases.html, 2026-06-13)
+composeBom = "2026.06.00" # verified latest BOM (developer.android.com/jetpack/compose/bom/bom-mapping, 2026-06-13)
+activityCompose = "1.13.0" # verified latest stable (developer.android.com/jetpack/androidx/releases/activity, 2026-06-13)
+coreKtx = "1.19.0"         # verified latest stable (developer.android.com/jetpack/androidx/releases/core, 2026-06-13)
+coroutinesTest = "1.9.0"   # kotlinx.coroutines stable (github.com/Kotlin/kotlinx.coroutines/releases, 2026-06-13 — matches coroutines bundled with Kotlin 2.4)
+junit = "4.13.2"           # JUnit 4 — stable; no reason to chase a newer series for pure-JVM tests
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+compose-ui = { group = "androidx.compose.ui", name = "ui" }
+compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
+compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+# :physics test dependencies — JVM only, zero Android
+kotlin-test-junit = { group = "org.jetbrains.kotlin", name = "kotlin-test-junit", version.ref = "kotlin" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" } # versioned with Kotlin (§1)
+# Pure-Kotlin JVM module plugin. Verified: kotlinlang.org/docs/gradle-configure-project.html, 2026-06-13.
+# In a version catalog the alias uses a dash: libs.plugins.kotlin.jvm resolves to id "org.jetbrains.kotlin.jvm".
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
